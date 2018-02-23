@@ -2,7 +2,7 @@
 def timestamp():
     return int(time.time())
 
-class Order():
+class OrderBase():
     ORDER_PRE_OPEN = 0
     ORDER_OPENED = 1
     ORDER_FILLED = 2
@@ -41,7 +41,7 @@ class Order():
     def isSell(self):
         return self.__direct == ORDER_SELL_LIMIT
 
-class OrderBroker(Order):
+class Order(OrderBase):
     def __init__(self, price, amount, direct):
         super.__init__(self, price, amount, direct)
         self.__id = None
@@ -49,6 +49,7 @@ class OrderBroker(Order):
     def getId(self):
         return self.__id
     def submit(self):
+        self.__id
         pass
     def cancel(self):
         pass
@@ -63,42 +64,42 @@ class OrderBroker(Order):
 class OrderBook():
     ORDERBOOK_PRE_OPEN = 0
     ORDERBOOK_OPENED = 1
-    ORDERBOOK_PRE_CANCLE = 2
-    ORDERBOOK_CANCLED = 3
-    ORDERBOOK_FINISHED = 4
-    def __init__(self, symbol, pricePrecision, amountPrecision):
+    ORDERBOOK_FINISHED = 2
+    def __init__(self, symbol, pricePrecision, amountPrecision, minAmount):
         self.__symbol = symbol
         self.__pricePrecision = pricePrecision
         self.__amountPrecision = amountPrecision
         self.__buyOrder = None
-        self.__sellOrders = {}
+        self.__sellOrders = []
+        self.__minAmount = minAmount
         self.__status = ORDERBOOK_PRE_OPEN
+    def isFinished(self):
+        return self.__status == ORDERBOOK_FINISHED
     def buyLimit(self, price, amount):
         self.__buyOrder = Order(price, amount, Order.ORDER_BUY_LIMIT)
-        pass
+        self.__status = ORDERBOOK_OPENED
     def sellLimit(self, price, amount):
-        self.__sellOrders[orderInfo.getId()] = Order(price, amount, Order.ORDER_SELL_LIMIT)
-        # order
-        pass
-    def cancelOrder(self, oid):
+        sellOrder = Order(price, amount, Order.ORDER_SELL_LIMIT)
+        self.__sellOrders.append(sellOrder)
+        # self.__sellOrders.insert(0, sellOrder)
+    def cancelOrder(self, order):
         # cancel order
-        updateOrders(orderInfo)
-        pass
-    def exitOrderBook(self):
-        if self.__buyOrder.getStatus() == Order.ORDER_OPENED:
-            cancelOrder(self.__buyOrder.)
-        for oid in self.__sellOrders:
-            sellOrder = self.__sellOrders[oid]
-            if sellOrder.getStatus() == Order.ORDER_OPENED:
-                exitOrder(sellOrder)
-        pass
+        order.cancel()
+        order.update()
+    def exitOrderBook(self, price):
+        for order in [self.__buyOrder] + self.__sellOrders:
+            if order.getStatus() == Order.ORDER_OPENED:
+                self.cancelOrder(order)
+        sellAmount, sellAmountFilled = self.getSellAmount()
+        diffAmount = self.__buyOrder.getAmountFilled() - self.__buyOrder.getFee() - sellAmount
+        if diffAmount >= self.__minAmount:
+            self.sellLimit(price, diffAmount)
     def getBuyAmount(self):
         return self.__buyOrder.getAmount(), self.__buyOrder.getAmountFilled()
     def getSellAmount(self):
         sellAmount = 0
         sellAmountFilled = 0
-        for oid in self.__sellOrders:
-            sellOrder = self.__sellOrders[oid]
+        for sellOrder in self.__sellOrders:
             sellAmountFilled += sellOrder.getAmountFilled()
             if sellOrder.getStatus() == Order.ORDER_OPENED:
                 sellAmount += sellOrder.getAmount()
@@ -109,14 +110,53 @@ class OrderBook():
         return self.__buyOrder
     def getSellOrders(self):
         return self.__sellOrders
-    def updateOrders(orderInfo):
-        if orderInfo.isBuy():
-            norder = self.__buyOrder
+    def updateOrders(self):
+        for order in [self.__buyOrder] + self.__sellOrders:
+            if order.getStatus() == Order.ORDER_OPENED:
+                order.update()
+        sellAmount, sellAmountFilled = self.getSellAmount()
+        if self.__buyOrder.getStatus() in (Order.ORDER_FILLED, Order.ORDER_CANCLED):
+            if self.__buyOrder.getAmountFilled() - self.__buyOrder.getFee() - sellAmountFilled < minAmount:
+                self.__status = ORDERBOOK_FINISHED
+    def getPNL(self):
+        return self.getProfit()/self.__buyOrder.getCashFilled()
+    def getProfit(self):
+        selledCash = 0
+        selledCashFee = 0
+        for sellOrder in self.__sellOrders:
+            selledCash += sellOrder.getCashFilled()
+            selledCashFee += sellOrder.getFee()
+        return selledCash - selledCashFee - self.__buyOrder.getCashFilled()
+
+class KLine():
+    def __init__(self, period, maxSize=60):
+        self.__maxSize = maxSize
+        self.__period = period
+        self.__klines = []
+    def update(self, k):
+        if len(self.__klines) == 0:
+            self.__klines = k
+            return
+        lastK = self.__klines[-1]
+        k0, k1 = k[0], k[1]
+        if k0.timestamp() == lastK.timestamp():
+            self.__klines[-1] = k0
         else:
-            norder = self.__sellOrders[orderInfo.getId()]
-        norder.updateOrder(orderInfo.getFilledAmount(), orderInfo.getfilledCash(), orderInfo.getFilledFee())
-        if orderInfo.filled():
-            norder.setStatus(Order.ORDER_FILLED)
-        elif orderInfo.canceled():
-            norder.setStatus(Order.ORDER_CANCLED)
+            self.__klines[-1] = k1
+            self.__klines.append(k0)
+        if len(self.__klines) > self.__maxSize:
+            self.__klines = self.__klines[-self.__maxSize:]
+    def MA(self, data):
+        pass
+
+class Strategy():
+    def __init__(self):
+
+
+book = OrderBook('ltcusdt', 2, 4, 0.001)
+book.buyLimit(190.21, 0.8)
+book.sellLimit(200, 0.8*0.998)
+book.exitOrderBook(197.05)
+book.updateOrders()
+book.isFinished()
 
