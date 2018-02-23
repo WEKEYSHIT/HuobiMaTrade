@@ -1,13 +1,10 @@
 
-def timestamp():
-    return int(time.time())
-
 class OrderBase():
     ORDER_PRE_OPEN = 0
     ORDER_OPENED = 1
     ORDER_FILLED = 2
     ORDER_PRE_CANCLE = 3
-    ORDER_CANCLED = 3
+    ORDER_CANCLED = 4
     ORDER_BUY_LIMIT = 0
     ORDER_SELL_LIMIT = 1
     def __init__(self, price, amount, direct):
@@ -16,7 +13,7 @@ class OrderBase():
         self.__filledAmount = 0
         self.__filledCash = 0
         self.__filledFee = 0
-        self.__status = ORDER_PRE_OPEN
+        self.__status = OrderBase.ORDER_PRE_OPEN
         self.__direct = direct
     def getPrice(self):
         return self.__price
@@ -43,7 +40,7 @@ class OrderBase():
 
 class Order(OrderBase):
     def __init__(self, price, amount, direct):
-        super.__init__(self, price, amount, direct)
+        OrderBase.__init__(self, price, amount, direct)
         self.__id = None
         self.submit()
     def getId(self):
@@ -72,12 +69,12 @@ class OrderBook():
         self.__buyOrder = None
         self.__sellOrders = []
         self.__minAmount = minAmount
-        self.__status = ORDERBOOK_PRE_OPEN
+        self.__status = OrderBook.ORDERBOOK_PRE_OPEN
     def isFinished(self):
-        return self.__status == ORDERBOOK_FINISHED
+        return self.__status == OrderBook.ORDERBOOK_FINISHED
     def buyLimit(self, price, amount):
         self.__buyOrder = Order(price, amount, Order.ORDER_BUY_LIMIT)
-        self.__status = ORDERBOOK_OPENED
+        self.__status = OrderBook.ORDERBOOK_OPENED
     def sellLimit(self, price, amount):
         sellOrder = Order(price, amount, Order.ORDER_SELL_LIMIT)
         self.__sellOrders.append(sellOrder)
@@ -117,7 +114,7 @@ class OrderBook():
         sellAmount, sellAmountFilled = self.getSellAmount()
         if self.__buyOrder.getStatus() in (Order.ORDER_FILLED, Order.ORDER_CANCLED):
             if self.__buyOrder.getAmountFilled() - self.__buyOrder.getFee() - sellAmountFilled < minAmount:
-                self.__status = ORDERBOOK_FINISHED
+                self.__status = OrderBook.ORDERBOOK_FINISHED
     def getPNL(self):
         return self.getProfit()/self.__buyOrder.getCashFilled()
     def getProfit(self):
@@ -128,14 +125,34 @@ class OrderBook():
             selledCashFee += sellOrder.getFee()
         return selledCash - selledCashFee - self.__buyOrder.getCashFilled()
 
+class DataSeries(list):
+    def __init__(self, maxSize, *args, **kw):
+        self.__maxSize = maxSize
+        list.__init__(self, *args, **kw)
+        self.resize()
+    def resize(self):
+        while len(self) > self.maxSize():
+            self.pop(0)
+    def extend(self, *args, **kw):
+        list.extend(self, *args, **kw)
+        self.resize()
+    def insert(self, *args, **kw):
+        list.insert(self, *args, **kw)
+        self.resize()
+    def append(self, *args, **kw):
+        list.append(self, *args, **kw)
+        self.resize()
+    def maxSize(self):
+        return self.__maxSize
+
 class KLine():
     def __init__(self, period, maxSize=60):
-        self.__maxSize = maxSize
         self.__period = period
-        self.__klines = []
+        self.__klines = DataSeries(maxSize)
+        self.__ma = {}
     def update(self, k):
         if len(self.__klines) == 0:
-            self.__klines = k
+            self.__klines.extern(k)
             return
         lastK = self.__klines[-1]
         k0, k1 = k[0], k[1]
@@ -144,13 +161,23 @@ class KLine():
         else:
             self.__klines[-1] = k1
             self.__klines.append(k0)
-        if len(self.__klines) > self.__maxSize:
-            self.__klines = self.__klines[-self.__maxSize:]
-    def MA(self, data):
-        pass
+        self.__updateMA()
+    def __updateMA(self):
+        for period in self.__klines:
+            if len(self.__klines) >= period:
+                self.__ma[period].append(sum(self.__klines[-period:])/float(period))
+            
+    def MA(self, period):
+        if self.__ma.get(period) is None:
+            ma = []
+            if len(self.__klines) >= period:
+                ma = [sum(self.__klines[-period:])/float(period)]
+            self.__ma[period] = DataSeries(self.__klines.maxSize(), ma)
+        return self.__ma[period]
 
 class Strategy():
     def __init__(self):
+        pass
 
 
 book = OrderBook('ltcusdt', 2, 4, 0.001)
