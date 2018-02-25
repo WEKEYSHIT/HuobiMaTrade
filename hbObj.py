@@ -1,3 +1,10 @@
+import hbClient as hbc
+import time
+from hbsdk import ApiError
+import datetime
+
+def timestamp():
+    return int(time.time())
 
 class OrderBase():
     ORDER_PRE_OPEN = 0
@@ -72,6 +79,8 @@ class OrderBook():
         self.__status = OrderBook.ORDERBOOK_PRE_OPEN
     def isFinished(self):
         return self.__status == OrderBook.ORDERBOOK_FINISHED
+    def getStatus(self):
+        return self.__status
     def buyLimit(self, price, amount):
         self.__buyOrder = Order(price, amount, Order.ORDER_BUY_LIMIT)
         self.__status = OrderBook.ORDERBOOK_OPENED
@@ -146,44 +155,98 @@ class DataSeries(list):
         return self.__maxSize
 
 class KLine():
-    def __init__(self, period, maxSize=60):
-        self.__period = period
-        self.__klines = DataSeries(maxSize)
+    OHLC_TIME = 0
+    OHLC_OPEN = 1
+    OHLC_HIGH = 2
+    OHLC_LOW = 3
+    OHLC_CLOSE = 4
+    OHLC_VOL = 5
+    def __init__(self, maxSize=60):
+        self.__maxSize = maxSize
+        # time open high low close volume
+        self.__ohlc = []
         self.__ma = {}
-    def update(self, k):
-        if len(self.__klines) == 0:
-            self.__klines.extern(k)
-            return
-        lastK = self.__klines[-1]
-        k0, k1 = k[0], k[1]
-        if k0.timestamp() == lastK.timestamp():
-            self.__klines[-1] = k0
+    def getOHLC(self, T=None):
+        if T is None:
+            return self.__ohlc
+        return self.__ohlc[T]
+    def updateOHLC(self, k):
+        if len(self.__ohlc) == 0:
+            self.__ohlc = map(lambda x:DataSeries(self.__maxSize, [x]), k)
         else:
-            self.__klines[-1] = k1
-            self.__klines.append(k0)
+            for x in zip(self.__ohlc, k):
+                ohlc_x,k_x = x
+                ohlc_x.append(k_x)
         self.__updateMA()
-    def __updateMA(self):
-        for period in self.__klines:
-            if len(self.__klines) >= period:
-                self.__ma[period].append(sum(self.__klines[-period:])/float(period))
-            
+    '''
+    def updateOHLC(self, k):
+        if len(self.__ohlc) == 0:
+            self.__ohlc = map(lambda x:DataSeries(self.__maxSize, x), k)
+            self.__updateMA()
+            return
+        ktime0,ktime1 = k[0]
+        lastKtime = self.__ohlc[0][-1]
+        if ktime0 == lastKtime:
+            append = False
+            for x in zip(self.__ohlc, k):
+                ohlc_x,k_x = x
+                ohlc_x[-1] = k_x[0]
+        else:
+            append = True
+            for x in zip(self.__ohlc, k):
+                ohlc_x,k_x = x
+                ohlc_x[-1] = k_x[1]
+                ohlc_x.append(k_x[0])
+        self.__updateMA(append)
+    '''
+    def __updateMA(self, append=True):
+        for period in self.__ma:
+            low = self.__ohlc[self.OHLC_CLOSE] if len(self.__ohlc) else []
+            if len(low) >= period:
+                ma = sum(low[-period:])/float(period)
+                if append or len(self.__ma) == 0:
+                    self.__ma[period].append(ma)
+                self.__ma[period][-1] = ma
     def MA(self, period):
+        low = self.__ohlc[self.OHLC_CLOSE] if len(self.__ohlc) else []
         if self.__ma.get(period) is None:
             ma = []
-            if len(self.__klines) >= period:
-                ma = [sum(self.__klines[-period:])/float(period)]
-            self.__ma[period] = DataSeries(self.__klines.maxSize(), ma)
+            if len(low) >= period:
+                ma = [sum(low[-period:])/float(period)]
+            self.__ma[period] = DataSeries(self.__maxSize, ma)
         return self.__ma[period]
 
+def cross_above(s1, s2):
+    return False if len(s1) < 2 or len(s2) < 2 else s1[-2] <= s2[-2] and s1[-1] > s2[-1]
+def cross_below(s1, s2):
+    return False if len(s1) < 2 or len(s2) < 2 else s1[-2] >= s2[-2] and s1[-1] < s2[-1]
+
 class Strategy():
-    def __init__(self):
+    def __init__(self, symbol):
+        self.__kline60 = KLine(60)
+        self.__ma10 = self.__kline60.MA(10)
+        self.__ma30 = self.__kline60.MA(30)
+        self.__coin = hbc.hbSymbols().getCoin(symbol)
+        self.__orderBook = OrderBook(symbol, self.__coin.getCashPrecision(), self.__coin.getCoinPrecision(), self.__coin.getMinAmount())
+        self.__broker = hbc.hbTradeClient()
+    def onTicks(self):
         pass
+    def onBars(self):
+        kclose = self.__kline60.getOHLC(OrderBook.OHLC_LOW)
+        if self.__orderBook.getStatus() == OrderBook.ORDERBOOK_PRE_OPEN:
+            if cross_above(self.__ma10, self.__ma30):
+                self.__orderBook.buyLimit(self.__usdt/kclose, kclose)
+        elif self.__orderBook.getStatus() == OrderBook.ORDERBOOK_OPENED and cross_below(self.__ma10, self.__ma30):
+            self.__orderBook.exitOrderBook(kclose)
+    def onTradeInfo(self):
+        pass
+    def run(self, period):
+        klines = self.__broker.getKLine(self.__coin.getSymbol(), 60, 40)
+        klines.pop(0)
+        while len(klines):
+            self.__kline60.updateOHLC(klines.pop(-1))
+        while True:
+            klines = self.__broker.getKLine(self.__coin.getSymbol(), 60, 2)
+            time.sleep(period)
 
-
-book = OrderBook('ltcusdt', 2, 4, 0.001)
-book.buyLimit(190.21, 0.8)
-book.sellLimit(200, 0.8*0.998)
-book.exitOrderBook(197.05)
-book.updateOrders()
-book.isFinished()
-
+Strategy('ltcusdt').run(10)
