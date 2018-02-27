@@ -51,17 +51,21 @@ class hbTradeUserTransaction(TradeUserTransactionBase):
     def __init__(self, obj):
         self.__obj = obj
     @Str2float
-    def getBTC(self):
+    def getFilledAmount(self):
         return self.__obj['field-amount']
     @Str2float
-    def getBTCUSD(self):
-        #return self.__obj['field-cash-amount']
+    def getPrice(self):
         return self.__obj['price']
     @Str2float
-    def getFee(self):
+    def getFilledCash(self):
+        return self.__obj['field-cash-amount']
+    @Str2float
+    def getFilledFee(self):
         return self.__obj['field-fees']
     def getOrderId(self):
         return self.__obj['id']
+    def isCanceled(self):
+        return self.__obj['state'] == hbOrderState.OrderCanceled
     def isFilled(self):
         return self.__obj['state'] == hbOrderState.OrderFilled
     def getDateTime(self):
@@ -100,6 +104,14 @@ class Coin():
         return self.__cashPrecision
     def getCoinPrecision(self):
         return self.__coinPrecision
+    def PriceRoundUp(self, price):
+        return RoundUp(price, self.__cashPrecision)
+    def PriceRoundDown(self, price):
+        return RoundDown(price, self.__cashPrecision)
+    def AmountRoundUp(self, amount):
+        return RoundUp(amount, self.__coinPrecision)
+    def AmountRoundDown(self, amount):
+        return RoundDown(amount, self.__coinPrecision)
 
 class hbCoin(Coin):
     def __init__(self, coinInfo):
@@ -241,5 +253,6 @@ class hbTradeClient(TradeClientBase):
     @tryForever
     def getKLine(self, symbol, period, length = 1):
         klines = self.__client.mget('/market/history/kline', symbol=symbol, period='%dmin'%period, size=length)
-        return [(k.id, k.open, k.high, k.low, k.close, k.vol) for k in klines]
+        #return [(k.id, k.open, k.high, k.low, k.close, k.vol) for k in klines]
+        return [[k.id, k.open, k.high, k.low, k.close, k.vol] for k in klines]
 

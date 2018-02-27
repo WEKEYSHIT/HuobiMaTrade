@@ -1,10 +1,22 @@
 import hbClient as hbc
 import time
 from hbsdk import ApiError
-import datetime
+from liveApi.liveUtils import *
 
+hbBroker = hbc.hbTradeClient()
+
+'''
 def timestamp():
     return int(time.time())
+
+def RoundUp(f, n):
+    r = round(f, n)
+    return r if r >= f else round(r + (10**-n), n)
+
+def RoundDown(f, n):
+    r = round(f, n)
+    return r if r <= f else round(r - (10**-n), n)
+'''
 
 class OrderBase():
     ORDER_PRE_OPEN = 0
@@ -46,31 +58,36 @@ class OrderBase():
         return self.__direct == ORDER_SELL_LIMIT
 
 class Order(OrderBase):
-    def __init__(self, price, amount, direct):
+    def __init__(self, symbol, price, amount, direct):
         OrderBase.__init__(self, price, amount, direct)
+        self.__broker = hbBroker
+        self.__symbol = symbol
         self.__id = None
         self.submit()
     def getId(self):
         return self.__id
     def submit(self):
-        self.__id
-        pass
+        if self.isBuy():
+            orderInfo = self.__broker.buyLimit(self.__symbol, self.getPrice(), self.getAmount())
+        else:
+            orderInfo = self.__broker.sellLimit(self.__symbol, self.getPrice(), self.getAmount())
+        self.__id = orderInfo.getId()
     def cancel(self):
-        pass
+        self.__broker.cancelOrder(self.getId())
     def update(self):
-        # orderInfo = orderQuery
-        self.updateOrder(orderInfo.getFilledAmount(), orderInfo.getfilledCash(), orderInfo.getFilledFee())
-        if orderInfo.filled():
+        orderInfo = getUserTransactions([self.getId()])[0]
+        self.updateOrder(orderInfo.getFilledAmount(), orderInfo.getFilledCash(), orderInfo.getFilledFee())
+        if orderInfo.isFilled():
             self.setStatus(Order.ORDER_FILLED)
-        elif orderInfo.canceled():
+        elif orderInfo.isCanceled():
             self.setStatus(Order.ORDER_CANCLED)
 
 class OrderBook():
     ORDERBOOK_PRE_OPEN = 0
     ORDERBOOK_OPENED = 1
     ORDERBOOK_FINISHED = 2
-    def __init__(self, symbol, pricePrecision, amountPrecision, minAmount):
-        self.__symbol = symbol
+    def __init__(self, coin):
+        self.__coin = coin
         self.__pricePrecision = pricePrecision
         self.__amountPrecision = amountPrecision
         self.__buyOrder = None
@@ -82,10 +99,16 @@ class OrderBook():
     def getStatus(self):
         return self.__status
     def buyLimit(self, price, amount):
-        self.__buyOrder = Order(price, amount, Order.ORDER_BUY_LIMIT)
+        symbol = self.__coin.getSymbol()
+        price = self.__coin.PriceRoundUp(price)
+        amount = self.__coin.AmountRoundDown(amount)
+        self.__buyOrder = Order(symbol, price, amount, Order.ORDER_BUY_LIMIT)
         self.__status = OrderBook.ORDERBOOK_OPENED
     def sellLimit(self, price, amount):
-        sellOrder = Order(price, amount, Order.ORDER_SELL_LIMIT)
+        symbol = self.__coin.getSymbol()
+        price = self.__coin.PriceRoundDown(price)
+        amount = self.__coin.AmountRoundDown(amount)
+        sellOrder = Order(symbol, price, amount, Order.ORDER_SELL_LIMIT)
         self.__sellOrders.append(sellOrder)
         # self.__sellOrders.insert(0, sellOrder)
     def cancelOrder(self, order):
@@ -169,6 +192,8 @@ class KLine():
     def getOHLC(self, T=None):
         if T is None:
             return self.__ohlc
+        if len(self.__ohlc) <= T:
+            return []
         return self.__ohlc[T]
     def updateOHLC(self, k):
         if len(self.__ohlc) == 0:
@@ -221,32 +246,83 @@ def cross_above(s1, s2):
 def cross_below(s1, s2):
     return False if len(s1) < 2 or len(s2) < 2 else s1[-2] >= s2[-2] and s1[-1] < s2[-1]
 
+df=timestamp_to_DateTimeLocal
+
 class Strategy():
     def __init__(self, symbol):
         self.__kline60 = KLine(60)
         self.__ma10 = self.__kline60.MA(10)
         self.__ma30 = self.__kline60.MA(30)
         self.__coin = hbc.hbSymbols().getCoin(symbol)
-        self.__orderBook = OrderBook(symbol, self.__coin.getCashPrecision(), self.__coin.getCoinPrecision(), self.__coin.getMinAmount())
-        self.__broker = hbc.hbTradeClient()
+        self.__orderBook = None
+        self.__orderBookHistory = []
+        self.__broker = hbBroker
+        self.__cash = 0
+    def updateCash(self):
+        self.__cash = self.__broker.getAccountBalance().getCoinTrade('usdt')
     def onTicks(self):
         pass
     def onBars(self):
-        kclose = self.__kline60.getOHLC(OrderBook.OHLC_LOW)
-        if self.__orderBook.getStatus() == OrderBook.ORDERBOOK_PRE_OPEN:
+        print '---onBars'
+        print self.__ma10
+        print self.__ma30
+        print self.__kline60.getOHLC(KLine.OHLC_CLOSE)
+        kclose = self.__kline60.getOHLC(KLine.OHLC_CLOSE)[-1]
+        if self.__orderBook is None:
             if cross_above(self.__ma10, self.__ma30):
+                self.__orderBook = OrderBook(self.__coin.getSymbol(), self.__coin)
+                self.__orderBookHistory.append(self.__orderBook)
                 self.__orderBook.buyLimit(self.__usdt/kclose, kclose)
         elif self.__orderBook.getStatus() == OrderBook.ORDERBOOK_OPENED and cross_below(self.__ma10, self.__ma30):
             self.__orderBook.exitOrderBook(kclose)
+    def onOrderBookExit(self):
+        self.__orderBook = None
+        
     def onTradeInfo(self):
-        pass
+        if self.__orderBook.getStatus() == OrderBook.ORDERBOOK_FINISHED:
+            self.onOrderBookExit()
+            return
+        buyAmount,buyAmountFilled = self.__orderBook.getBuyAmount()
+        sellAmount,selledAmountFilled = self.__orderBook.getSellAmount()
+        newAmount = buyAmountFilled - sellAmount
+        if newAmount > self.__coin.getMinAmount():
+            self.__orderBook.sellLimit(buyPrice*1.1, newAmount)
+
+    def getNextKTime(self, period):
+        times = self.__kline60.getOHLC(KLine.OHLC_TIME)
+        if len(times) == 0:
+            return timestamp()/period*period-period
+        return  times[-1] + period;
+
     def run(self, period):
-        klines = self.__broker.getKLine(self.__coin.getSymbol(), 60, 40)
+        kPeriodMin = 5
+        klines = self.__broker.getKLine(self.__coin.getSymbol(), kPeriodMin, 40)
         klines.pop(0)
         while len(klines):
             self.__kline60.updateOHLC(klines.pop(-1))
         while True:
-            klines = self.__broker.getKLine(self.__coin.getSymbol(), 60, 2)
-            time.sleep(period)
+            if timestamp()%5 == 0 and self.__orderBook is not None:
+                self.__orderBook.updateOrders()
+                self.onTradeInfo()
+                
+            ksec = kPeriodMin*60
+            ktime = self.getNextKTime(ksec)
+            print df(ktime + ksec),' -- ',df(timestamp())
+            if ktime + ksec <= timestamp():
+                print '----'
+                klines = self.__broker.getKLine(self.__coin.getSymbol(), kPeriodMin, 2)
+                newK = klines[1]
+                nk = klines[0]
+                print (df(newK[KLine.OHLC_TIME]),newK[KLine.OHLC_CLOSE]),(df(nk[KLine.OHLC_TIME]),nk[KLine.OHLC_CLOSE])
+                if newK[KLine.OHLC_TIME] == ktime or timestamp() > ktime + ksec + 30:
+                    nk = klines[0]
+                    newK[KLine.OHLC_TIME] = ktime
+                    # newK[KLine.OHLC_CLOSE] = nk[KLine.OHLC_CLOSE]
+                    self.__kline60.updateOHLC(newK)
+                    self.onBars()
+                time.sleep(0.2)
+                continue
+            time.sleep(min(period, ktime + ksec - timestamp()))
 
-Strategy('ltcusdt').run(10)
+Strategy('ltcusdt').run(60)
+
