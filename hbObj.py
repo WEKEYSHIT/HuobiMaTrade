@@ -5,19 +5,6 @@ from liveApi.liveUtils import *
 
 hbBroker = hbc.hbTradeClient()
 
-'''
-def timestamp():
-    return int(time.time())
-
-def RoundUp(f, n):
-    r = round(f, n)
-    return r if r >= f else round(r + (10**-n), n)
-
-def RoundDown(f, n):
-    r = round(f, n)
-    return r if r <= f else round(r - (10**-n), n)
-'''
-
 class OrderBase():
     ORDER_PRE_OPEN = 0
     ORDER_OPENED = 1
@@ -53,9 +40,9 @@ class OrderBase():
         self.__filledCash = filledCash
         self.__filledFee = filledFee
     def isBuy(self):
-        return self.__direct == ORDER_BUY_LIMIT
+        return self.__direct == Order.ORDER_BUY_LIMIT
     def isSell(self):
-        return self.__direct == ORDER_SELL_LIMIT
+        return self.__direct == Order.ORDER_SELL_LIMIT
 
 class Order(OrderBase):
     def __init__(self, symbol, price, amount, direct):
@@ -69,13 +56,18 @@ class Order(OrderBase):
     def submit(self):
         if self.isBuy():
             orderInfo = self.__broker.buyLimit(self.__symbol, self.getPrice(), self.getAmount())
+            print "buy: %f %f"%(self.getPrice(), self.getAmount())
         else:
             orderInfo = self.__broker.sellLimit(self.__symbol, self.getPrice(), self.getAmount())
+            print "sell: %f %f"%(self.getPrice(), self.getAmount())
         self.__id = orderInfo.getId()
+        self.setStatus(Order.ORDER_OPENED)
     def cancel(self):
         self.__broker.cancelOrder(self.getId())
+        print "cancel order %d"%self.getId()
     def update(self):
-        orderInfo = getUserTransactions([self.getId()])[0]
+        orderInfo = self.__broker.getUserTransactions([self.getId()])[0]
+        print "upate %d : amount %f %f cash %f"%(self.getId(), self.getAmount(), orderInfo.getFilledAmount(), orderInfo.getFilledCash())
         self.updateOrder(orderInfo.getFilledAmount(), orderInfo.getFilledCash(), orderInfo.getFilledFee())
         if orderInfo.isFilled():
             self.setStatus(Order.ORDER_FILLED)
@@ -88,11 +80,8 @@ class OrderBook():
     ORDERBOOK_FINISHED = 2
     def __init__(self, coin):
         self.__coin = coin
-        self.__pricePrecision = pricePrecision
-        self.__amountPrecision = amountPrecision
         self.__buyOrder = None
         self.__sellOrders = []
-        self.__minAmount = minAmount
         self.__status = OrderBook.ORDERBOOK_PRE_OPEN
     def isFinished(self):
         return self.__status == OrderBook.ORDERBOOK_FINISHED
@@ -121,7 +110,7 @@ class OrderBook():
                 self.cancelOrder(order)
         sellAmount, sellAmountFilled = self.getSellAmount()
         diffAmount = self.__buyOrder.getAmountFilled() - self.__buyOrder.getFee() - sellAmount
-        if diffAmount >= self.__minAmount:
+        if diffAmount >= self.__coin.getMinAmount():
             self.sellLimit(price, diffAmount)
     def getBuyAmount(self):
         return self.__buyOrder.getAmount(), self.__buyOrder.getAmountFilled()
@@ -145,7 +134,7 @@ class OrderBook():
                 order.update()
         sellAmount, sellAmountFilled = self.getSellAmount()
         if self.__buyOrder.getStatus() in (Order.ORDER_FILLED, Order.ORDER_CANCLED):
-            if self.__buyOrder.getAmountFilled() - self.__buyOrder.getFee() - sellAmountFilled < minAmount:
+            if self.__buyOrder.getAmountFilled() - self.__buyOrder.getFee() - sellAmountFilled < self.__coin.getMinAmount():
                 self.__status = OrderBook.ORDERBOOK_FINISHED
     def getPNL(self):
         return self.getProfit()/self.__buyOrder.getCashFilled()
@@ -263,6 +252,15 @@ class Strategy():
     def onTicks(self):
         pass
     def onBars(self):
+        kclose = self.__kline60.getOHLC(KLine.OHLC_CLOSE)[-1]
+        if self.__orderBook is None:
+            self.updateCash()
+            self.__orderBook = OrderBook(self.__coin)
+            self.__orderBookHistory.append(self.__orderBook)
+            self.__orderBook.buyLimit(kclose, self.__coin.getMinAmount()*2)
+        elif self.__orderBook.getBuyOrder().getStatus() == Order.ORDER_FILLED:
+            self.__orderBook.exitOrderBook(kclose)
+    def _onBars(self):
         print '---onBars'
         print self.__ma10
         print self.__ma30
@@ -270,18 +268,20 @@ class Strategy():
         kclose = self.__kline60.getOHLC(KLine.OHLC_CLOSE)[-1]
         if self.__orderBook is None:
             if cross_above(self.__ma10, self.__ma30):
-                self.__orderBook = OrderBook(self.__coin.getSymbol(), self.__coin)
+                self.__orderBook = OrderBook(self.__coin)
                 self.__orderBookHistory.append(self.__orderBook)
-                self.__orderBook.buyLimit(self.__usdt/kclose, kclose)
+                self.__orderBook.buyLimit(kclose, self.__usdt/kclose)
         elif self.__orderBook.getStatus() == OrderBook.ORDERBOOK_OPENED and cross_below(self.__ma10, self.__ma30):
             self.__orderBook.exitOrderBook(kclose)
     def onOrderBookExit(self):
         self.__orderBook = None
+        exit()
         
     def onTradeInfo(self):
         if self.__orderBook.getStatus() == OrderBook.ORDERBOOK_FINISHED:
             self.onOrderBookExit()
             return
+        buyPrice = self.__orderBook.getBuyOrder().getPrice()
         buyAmount,buyAmountFilled = self.__orderBook.getBuyAmount()
         sellAmount,selledAmountFilled = self.__orderBook.getSellAmount()
         newAmount = buyAmountFilled - sellAmount
@@ -295,13 +295,14 @@ class Strategy():
         return  times[-1] + period;
 
     def run(self, period):
-        kPeriodMin = 5
+        kPeriodMin = 1
         klines = self.__broker.getKLine(self.__coin.getSymbol(), kPeriodMin, 40)
         klines.pop(0)
         while len(klines):
             self.__kline60.updateOHLC(klines.pop(-1))
         while True:
-            if timestamp()%5 == 0 and self.__orderBook is not None:
+            #if timestamp()%5 == 0 and self.__orderBook is not None:
+            if self.__orderBook is not None:
                 self.__orderBook.updateOrders()
                 self.onTradeInfo()
                 
@@ -324,5 +325,6 @@ class Strategy():
                 continue
             time.sleep(min(period, ktime + ksec - timestamp()))
 
-Strategy('ltcusdt').run(60)
+#Strategy('ltcusdt').run(60)
+Strategy('ltcusdt').run(5)
 
